@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -70,16 +71,28 @@ func (p *AnthropicProvider) Check(ctx context.Context) (*Response, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return readRateLimitResponse(resp, true)
+		}
 		return nil, fmt.Errorf("rate limit endpoint status: %d", resp.StatusCode)
 	}
 
+	return readRateLimitResponse(resp, false)
+}
+
+func readRateLimitResponse(resp *http.Response, forceLimited bool) (*Response, error) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 	var payload anthropicPayload
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err == nil && payload.ResetAt != "" {
+	if err := json.Unmarshal(body, &payload); err == nil {
 		resetAt, _ := time.Parse(time.RFC3339, payload.ResetAt)
+		isLimited := payload.IsLimited || forceLimited || payload.RemainingTokens <= 0
 		return &Response{
 			RemainingTokens: payload.RemainingTokens,
 			ResetAt:         resetAt,
-			IsLimited:       payload.IsLimited,
+			IsLimited:       isLimited,
 			LimitPer5H:      payload.LimitPer5H,
 		}, nil
 	}
@@ -87,7 +100,7 @@ func (p *AnthropicProvider) Check(ctx context.Context) (*Response, error) {
 	remaining := parseIntHeader(resp.Header.Get("x-ratelimit-remaining-tokens"))
 	limit := parseIntHeader(resp.Header.Get("x-ratelimit-limit-tokens"))
 	resetAt := parseTimeHeader(resp.Header.Get("x-ratelimit-reset-timestamp"))
-	isLimited := resp.StatusCode == http.StatusTooManyRequests || remaining <= 0
+	isLimited := forceLimited || remaining <= 0
 
 	return &Response{
 		RemainingTokens: remaining,
