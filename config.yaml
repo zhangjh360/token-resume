@@ -1,0 +1,27 @@
+monitor:
+  processes:
+    - name: "claude"
+      pattern: "claude .*"
+    - name: "codex"
+      pattern: "codex .*"
+  poll_interval: 10s
+  token_check_interval: 30s
+
+rate_limit:
+  provider: "anthropic"
+  api_key: "${ANTHROPIC_API_KEY}"
+  proxy_endpoint: ""
+  headers: {}
+  fallback:
+    limit_per_5h: 1000000
+    reset_window_minutes: 300
+
+resume:
+  strategy: "session_replay"
+  restart_command: "claude --resume {{.SessionID}}"
+  safety_margin_seconds: 60
+  snapshot_path: ".tokenresume-snapshots.json"
+
+logging:
+  level: "info"
+  file: ""
