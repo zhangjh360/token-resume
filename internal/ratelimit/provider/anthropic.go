@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -44,7 +45,8 @@ func (p *AnthropicProvider) SupportsStreaming() bool {
 }
 
 func (p *AnthropicProvider) Check(ctx context.Context) (*Response, error) {
-	if p.cfg.ProxyEndpoint == "" {
+	endpoint, ok := p.rateLimitEndpoint()
+	if !ok {
 		return &Response{
 			RemainingTokens: p.cfg.Fallback.LimitPer5H,
 			ResetAt:         time.Now().Add(time.Duration(p.cfg.Fallback.ResetWindowMinutes) * time.Minute),
@@ -53,12 +55,15 @@ func (p *AnthropicProvider) Check(ctx context.Context) (*Response, error) {
 		}, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.cfg.ProxyEndpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	if p.cfg.APIKey != "" {
 		req.Header.Set("x-api-key", p.cfg.APIKey)
+	}
+	if p.cfg.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+p.cfg.AuthToken)
 	}
 	for k, v := range p.cfg.Headers {
 		req.Header.Set(k, v)
@@ -78,6 +83,30 @@ func (p *AnthropicProvider) Check(ctx context.Context) (*Response, error) {
 	}
 
 	return readRateLimitResponse(resp, false)
+}
+
+func (p *AnthropicProvider) rateLimitEndpoint() (string, bool) {
+	if strings.TrimSpace(p.cfg.ProxyEndpoint) != "" {
+		return p.cfg.ProxyEndpoint, true
+	}
+	if strings.TrimSpace(p.cfg.BaseURL) == "" {
+		return "", false
+	}
+	base, err := url.Parse(strings.TrimSpace(p.cfg.BaseURL))
+	if err != nil {
+		return "", false
+	}
+	path := strings.TrimSpace(p.cfg.EndpointPath)
+	if path == "" {
+		path = "/v1/rate_limit"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + path
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base.String(), true
 }
 
 func readRateLimitResponse(resp *http.Response, forceLimited bool) (*Response, error) {

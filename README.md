@@ -55,7 +55,12 @@ Default config file is `config.yaml`. Key fields:
 - `monitor.processes`: regex rules for target process matching.
 - `monitor.poll_interval`: process scan interval.
 - `monitor.token_check_interval`: token check interval.
+- `monitor.terminals_dir`: terminal output directory for 429 text fallback detection.
+- `monitor.claude_projects_dir`: Claude project log directory for `.jsonl` fallback detection.
 - `rate_limit.provider`: rate-limit provider (`anthropic` currently implemented).
+- `rate_limit.auth_token`: bearer token for direct mode (for example `${ANTHROPIC_AUTH_TOKEN}`).
+- `rate_limit.base_url`: direct mode base URL (for example `${ANTHROPIC_BASE_URL}`).
+- `rate_limit.endpoint_path`: rate-limit endpoint path, default is `/v1/rate_limit`.
 - `rate_limit.proxy_endpoint`: optional endpoint for rate-limit proxy.
 - `resume.strategy`: resume strategy (`sigstop` / `restart` / `session_replay`).
 - `resume.restart_command`: command template used by `session_replay`.
@@ -76,6 +81,8 @@ Default config file is `config.yaml`. Key fields:
 
 - Current implementation is mainly for Linux (`/proc` and Unix signals required).
 - `session_replay` depends on external CLI session recovery capability.
+- Priority for rate-limit source: `proxy_endpoint` > `base_url + endpoint_path` > `fallback`.
+- Fallback detection: when API status is unavailable, the app scans `terminals_dir` and `claude_projects_dir` for `429/reset` text and triggers suspend/resume flow.
 - For production hardening, consider adding:
   - Retry/backoff
   - Fine-grained error classification

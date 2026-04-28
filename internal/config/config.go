@@ -19,6 +19,8 @@ type MonitorConfig struct {
 	Processes          []ProcessPattern `yaml:"processes"`
 	PollInterval       time.Duration    `yaml:"poll_interval"`
 	TokenCheckInterval time.Duration    `yaml:"token_check_interval"`
+	TerminalsDir       string           `yaml:"terminals_dir"`
+	ClaudeProjectsDir  string           `yaml:"claude_projects_dir"`
 }
 
 type ProcessPattern struct {
@@ -29,6 +31,9 @@ type ProcessPattern struct {
 type RateLimitConfig struct {
 	Provider      string             `yaml:"provider"`
 	APIKey        string             `yaml:"api_key"`
+	AuthToken     string             `yaml:"auth_token"`
+	BaseURL       string             `yaml:"base_url"`
+	EndpointPath  string             `yaml:"endpoint_path"`
 	ProxyEndpoint string             `yaml:"proxy_endpoint"`
 	Fallback      RateLimitFallback  `yaml:"fallback"`
 	Headers       map[string]string  `yaml:"headers"`
@@ -84,6 +89,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.RateLimit.Fallback.ResetWindowMinutes <= 0 {
 		c.RateLimit.Fallback.ResetWindowMinutes = 300
+	}
+	if c.RateLimit.EndpointPath == "" {
+		c.RateLimit.EndpointPath = "/v1/rate_limit"
 	}
 	if c.Resume.Strategy == "" {
 		c.Resume.Strategy = "sigstop"

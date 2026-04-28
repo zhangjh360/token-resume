@@ -123,8 +123,28 @@ func run(
 			log.Error("check rate limit failed: %v", err)
 			return
 		}
+		log.Info(
+			"rate limit status: limited=%t remaining=%d resetAt=%s",
+			status.IsLimited,
+			status.RemainingTokens,
+			status.ResetAt.Format(time.RFC3339),
+		)
 		if !status.IsLimited {
-			return
+			hint, hintErr := pm.DetectRateLimitHint(cfg.Monitor.TerminalsDir, cfg.Monitor.ClaudeProjectsDir)
+			if hintErr != nil {
+				log.Error("detect terminal rate limit hint failed: %v", hintErr)
+				return
+			}
+			if hint == nil || !hint.IsLimited {
+				return
+			}
+			if !hint.ResetAt.After(time.Now()) {
+				log.Info("rate limit hint ignored because resetAt has passed source=%s resetAt=%s", hint.Source, hint.ResetAt.Format(time.RFC3339))
+				return
+			}
+			status.IsLimited = true
+			status.ResetAt = hint.ResetAt
+			log.Warn("rate limit hint detected from terminal source=%s resetAt=%s", hint.Source, hint.ResetAt.Format(time.RFC3339))
 		}
 
 		log.Warn("rate limited: remaining=%d resetAt=%s", status.RemainingTokens, status.ResetAt.Format(time.RFC3339))
@@ -176,6 +196,7 @@ func run(
 	}
 
 	scan()
+	handleRateLimit()
 
 	for {
 		select {

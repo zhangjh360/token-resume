@@ -6,10 +6,15 @@ monitor:
       pattern: "codex .*"
   poll_interval: 10s
   token_check_interval: 30s
+  terminals_dir: "/home/zhangjh/.cursor/projects/home-zhangjh-work-code-golang-token-resume/terminals"
+  claude_projects_dir: "/home/zhangjh/.claude/projects"
 
 rate_limit:
   provider: "anthropic"
-  api_key: "${ANTHROPIC_API_KEY}"
+  api_key: ""
+  auth_token: "${ANTHROPIC_AUTH_TOKEN}"
+  base_url: "${ANTHROPIC_BASE_URL}"
+  endpoint_path: "/v1/rate_limit"
   proxy_endpoint: ""
   headers: {}
   fallback:
