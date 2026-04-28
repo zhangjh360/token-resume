@@ -3,6 +3,7 @@ package monitor
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,12 @@ type ProcessMonitor struct {
 type targetPattern struct {
 	name string
 	re   *regexp.Regexp
+}
+
+type RateLimitHint struct {
+	IsLimited bool
+	ResetAt   time.Time
+	Source    string
 }
 
 func NewProcessMonitor(patterns []config.ProcessPattern) (*ProcessMonitor, error) {
@@ -187,4 +194,135 @@ func runDetached(commandLine, wd string) error {
 	cmd.Stdout = bytes.NewBuffer(nil)
 	cmd.Stderr = bytes.NewBuffer(nil)
 	return cmd.Start()
+}
+
+func (m *ProcessMonitor) DetectRateLimitHint(terminalsDir, claudeProjectsDir string) (*RateLimitHint, error) {
+	best := &RateLimitHint{}
+	if hint, err := detectFromTerminalFiles(terminalsDir); err != nil {
+		return nil, err
+	} else if hint != nil && (best.ResetAt.IsZero() || hint.ResetAt.After(best.ResetAt)) {
+		best = hint
+	}
+	if hint, err := detectFromClaudeProjectLogs(claudeProjectsDir); err != nil {
+		return nil, err
+	} else if hint != nil && (best.ResetAt.IsZero() || hint.ResetAt.After(best.ResetAt)) {
+		best = hint
+	}
+	if best.ResetAt.IsZero() {
+		return nil, nil
+	}
+	return best, nil
+}
+
+func detectFromTerminalFiles(terminalsDir string) (*RateLimitHint, error) {
+	if strings.TrimSpace(terminalsDir) == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(terminalsDir)
+	if err != nil {
+		return nil, err
+	}
+	best := &RateLimitHint{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
+		}
+		p := filepath.Join(terminalsDir, entry.Name())
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		hint := parseRateLimitHint(string(raw))
+		if hint == nil || hint.ResetAt.IsZero() {
+			continue
+		}
+		if best.ResetAt.IsZero() || hint.ResetAt.After(best.ResetAt) {
+			best = hint
+			best.Source = p
+		}
+	}
+	if best.ResetAt.IsZero() {
+		return nil, nil
+	}
+	return best, nil
+}
+
+func detectFromClaudeProjectLogs(projectsDir string) (*RateLimitHint, error) {
+	if strings.TrimSpace(projectsDir) == "" {
+		return nil, nil
+	}
+	best := &RateLimitHint{}
+	err := filepath.WalkDir(projectsDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		raw, err := tailReadFile(path, 64*1024)
+		if err != nil {
+			return nil
+		}
+		hint := parseRateLimitHint(raw)
+		if hint == nil || hint.ResetAt.IsZero() {
+			return nil
+		}
+		if best.ResetAt.IsZero() || hint.ResetAt.After(best.ResetAt) {
+			best = hint
+			best.Source = path
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if best.ResetAt.IsZero() {
+		return nil, nil
+	}
+	return best, nil
+}
+
+var cnResetPattern = regexp.MustCompile(`限额将在\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*重置`)
+var enResetPattern = regexp.MustCompile(`reset(?:s)?(?:\s+at|\s+on|\s+time)?[:\s]+([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2})`)
+
+func parseRateLimitHint(content string) *RateLimitHint {
+	if !strings.Contains(content, "429") &&
+		!strings.Contains(content, "已达到 5 小时的使用上限") &&
+		!strings.Contains(strings.ToLower(content), "rate limit") {
+		return nil
+	}
+	if m := cnResetPattern.FindStringSubmatch(content); len(m) == 2 {
+		resetAt, err := time.ParseInLocation("2006-01-02 15:04:05", m[1], time.Local)
+		if err == nil {
+			return &RateLimitHint{IsLimited: true, ResetAt: resetAt}
+		}
+	}
+	if m := enResetPattern.FindStringSubmatch(strings.ToLower(content)); len(m) == 2 {
+		layout := "2006-01-02 15:04:05"
+		val := strings.ReplaceAll(m[1], "t", " ")
+		resetAt, err := time.ParseInLocation(layout, val, time.Local)
+		if err == nil {
+			return &RateLimitHint{IsLimited: true, ResetAt: resetAt}
+		}
+	}
+	return nil
+}
+
+func tailReadFile(path string, maxBytes int64) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	stat, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	size := stat.Size()
+	offset := int64(0)
+	if size > maxBytes {
+		offset = size - maxBytes
+	}
+	buf := make([]byte, size-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil {
+		return "", err
+	}
+	return string(buf), nil
 }

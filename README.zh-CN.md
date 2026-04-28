@@ -55,7 +55,12 @@ go build -o tokenresume ./cmd/tokenresume
 - `monitor.processes`：要监控的进程匹配规则（正则）。
 - `monitor.poll_interval`：进程扫描间隔。
 - `monitor.token_check_interval`：Token 状态检查间隔。
+- `monitor.terminals_dir`：终端输出目录（用于 429 文本兜底检测）。
+- `monitor.claude_projects_dir`：Claude 项目日志目录（用于 `.jsonl` 兜底检测）。
 - `rate_limit.provider`：限流检测提供方（当前已实现 `anthropic`）。
+- `rate_limit.auth_token`：直连模式 Bearer Token（如 `${ANTHROPIC_AUTH_TOKEN}`）。
+- `rate_limit.base_url`：直连模式基础地址（如 `${ANTHROPIC_BASE_URL}`）。
+- `rate_limit.endpoint_path`：限流查询路径，默认 `/v1/rate_limit`。
 - `rate_limit.proxy_endpoint`：可选的限流代理接口地址。
 - `resume.strategy`：恢复策略（`sigstop` / `restart` / `session_replay`）。
 - `resume.restart_command`：`session_replay` 模式下的恢复命令模板。
@@ -76,6 +81,8 @@ go build -o tokenresume ./cmd/tokenresume
 
 - 本项目目前主要面向 Linux 环境（依赖 `/proc` 与 Unix 信号）。
 - `session_replay` 依赖外部 CLI 的会话恢复能力，请按实际命令调整模板。
+- 直连模式优先级：`proxy_endpoint` > `base_url + endpoint_path` > `fallback`。
+- 兜底检测：当 API 无法判断限流时，会从 `terminals_dir` 与 `claude_projects_dir` 扫描 `429/限额重置` 文本并触发恢复流程。
 - 如需更稳定接入生产环境，建议增加：
   - 重试退避
   - 更细粒度错误分类

@@ -63,6 +63,13 @@ func (m *Manager) ListSnapshots() []*TaskSnapshot {
 	return out
 }
 
+func (m *Manager) RemoveSnapshot(pid int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.snapshots, pid)
+	return m.saveSnapshotFile()
+}
+
 func (m *Manager) Resume(ctx context.Context, snapshot *TaskSnapshot) error {
 	strategy, fallback, err := m.pickStrategies()
 	if err != nil {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -43,7 +45,8 @@ func (p *AnthropicProvider) SupportsStreaming() bool {
 }
 
 func (p *AnthropicProvider) Check(ctx context.Context) (*Response, error) {
-	if p.cfg.ProxyEndpoint == "" {
+	endpoint, ok := p.rateLimitEndpoint()
+	if !ok {
 		return &Response{
 			RemainingTokens: p.cfg.Fallback.LimitPer5H,
 			ResetAt:         time.Now().Add(time.Duration(p.cfg.Fallback.ResetWindowMinutes) * time.Minute),
@@ -52,12 +55,15 @@ func (p *AnthropicProvider) Check(ctx context.Context) (*Response, error) {
 		}, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.cfg.ProxyEndpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	if p.cfg.APIKey != "" {
 		req.Header.Set("x-api-key", p.cfg.APIKey)
+	}
+	if p.cfg.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+p.cfg.AuthToken)
 	}
 	for k, v := range p.cfg.Headers {
 		req.Header.Set(k, v)
@@ -70,16 +76,52 @@ func (p *AnthropicProvider) Check(ctx context.Context) (*Response, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return readRateLimitResponse(resp, true)
+		}
 		return nil, fmt.Errorf("rate limit endpoint status: %d", resp.StatusCode)
 	}
 
+	return readRateLimitResponse(resp, false)
+}
+
+func (p *AnthropicProvider) rateLimitEndpoint() (string, bool) {
+	if strings.TrimSpace(p.cfg.ProxyEndpoint) != "" {
+		return p.cfg.ProxyEndpoint, true
+	}
+	if strings.TrimSpace(p.cfg.BaseURL) == "" {
+		return "", false
+	}
+	base, err := url.Parse(strings.TrimSpace(p.cfg.BaseURL))
+	if err != nil {
+		return "", false
+	}
+	path := strings.TrimSpace(p.cfg.EndpointPath)
+	if path == "" {
+		path = "/v1/rate_limit"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + path
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base.String(), true
+}
+
+func readRateLimitResponse(resp *http.Response, forceLimited bool) (*Response, error) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 	var payload anthropicPayload
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err == nil && payload.ResetAt != "" {
+	if err := json.Unmarshal(body, &payload); err == nil {
 		resetAt, _ := time.Parse(time.RFC3339, payload.ResetAt)
+		isLimited := payload.IsLimited || forceLimited || payload.RemainingTokens <= 0
 		return &Response{
 			RemainingTokens: payload.RemainingTokens,
 			ResetAt:         resetAt,
-			IsLimited:       payload.IsLimited,
+			IsLimited:       isLimited,
 			LimitPer5H:      payload.LimitPer5H,
 		}, nil
 	}
@@ -87,7 +129,7 @@ func (p *AnthropicProvider) Check(ctx context.Context) (*Response, error) {
 	remaining := parseIntHeader(resp.Header.Get("x-ratelimit-remaining-tokens"))
 	limit := parseIntHeader(resp.Header.Get("x-ratelimit-limit-tokens"))
 	resetAt := parseTimeHeader(resp.Header.Get("x-ratelimit-reset-timestamp"))
-	isLimited := resp.StatusCode == http.StatusTooManyRequests || remaining <= 0
+	isLimited := forceLimited || remaining <= 0
 
 	return &Response{
 		RemainingTokens: remaining,

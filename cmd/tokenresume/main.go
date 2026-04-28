@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -19,25 +20,25 @@ import (
 )
 
 func main() {
-	var (
-		configPath = flag.String("config", "config.yaml", "config file path")
-		daemon     = flag.Bool("daemon", false, "run as daemon mode")
-		pid        = flag.Int("pid", 0, "pid for manual resume command")
-	)
-	flag.Parse()
-
-	if len(flag.Args()) > 0 && flag.Args()[0] == "resume" {
-		if *pid <= 0 {
-			fmt.Fprintln(os.Stderr, "resume command requires --pid")
-			os.Exit(1)
-		}
-		if err := monitor.ResumeProcess(*pid); err != nil {
+	handled, pid, err := parseResumeCommand(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+	}
+	if handled {
+		if err := monitor.ResumeProcess(pid); err != nil {
 			fmt.Fprintf(os.Stderr, "resume process failed: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("process %d resumed\n", *pid)
+		fmt.Printf("process %d resumed\n", pid)
 		return
 	}
+
+	var (
+		configPath = flag.String("config", "config.yaml", "config file path")
+		daemon     = flag.Bool("daemon", false, "run as daemon mode")
+	)
+	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -64,6 +65,22 @@ func main() {
 	defer cancel()
 
 	run(ctx, cfg, pm, detector, manager, log)
+}
+
+func parseResumeCommand(args []string) (bool, int, error) {
+	if len(args) == 0 || args[0] != "resume" {
+		return false, 0, nil
+	}
+	resumeFlags := flag.NewFlagSet("resume", flag.ContinueOnError)
+	resumeFlags.SetOutput(os.Stderr)
+	pid := resumeFlags.Int("pid", 0, "pid for manual resume command")
+	if err := resumeFlags.Parse(args[1:]); err != nil {
+		return true, 0, err
+	}
+	if *pid <= 0 {
+		return true, 0, errors.New("resume command requires --pid")
+	}
+	return true, *pid, nil
 }
 
 func run(
@@ -106,8 +123,28 @@ func run(
 			log.Error("check rate limit failed: %v", err)
 			return
 		}
+		log.Info(
+			"rate limit status: limited=%t remaining=%d resetAt=%s",
+			status.IsLimited,
+			status.RemainingTokens,
+			status.ResetAt.Format(time.RFC3339),
+		)
 		if !status.IsLimited {
-			return
+			hint, hintErr := pm.DetectRateLimitHint(cfg.Monitor.TerminalsDir, cfg.Monitor.ClaudeProjectsDir)
+			if hintErr != nil {
+				log.Error("detect terminal rate limit hint failed: %v", hintErr)
+				return
+			}
+			if hint == nil || !hint.IsLimited {
+				return
+			}
+			if !hint.ResetAt.After(time.Now()) {
+				log.Info("rate limit hint ignored because resetAt has passed source=%s resetAt=%s", hint.Source, hint.ResetAt.Format(time.RFC3339))
+				return
+			}
+			status.IsLimited = true
+			status.ResetAt = hint.ResetAt
+			log.Warn("rate limit hint detected from terminal source=%s resetAt=%s", hint.Source, hint.ResetAt.Format(time.RFC3339))
 		}
 
 		log.Warn("rate limited: remaining=%d resetAt=%s", status.RemainingTokens, status.ResetAt.Format(time.RFC3339))
@@ -152,10 +189,14 @@ func run(
 				continue
 			}
 			log.Info("resumed task pid=%d strategy=%s", s.PID, manager.Strategy())
+			if err := manager.RemoveSnapshot(s.PID); err != nil {
+				log.Error("remove snapshot failed pid=%d err=%v", s.PID, err)
+			}
 		}
 	}
 
 	scan()
+	handleRateLimit()
 
 	for {
 		select {
